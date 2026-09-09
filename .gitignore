@@ -1,0 +1,9 @@
+.env
+ui/
+
+# Only the two models actually used by the switcher's default set are
+# tracked -- everything else dropped into www/assets/ (for trying out other
+# models locally) is ignored.
+www/assets/*.glb
+!www/assets/nokia_3310.glb
+!www/assets/low_poly_mobile_phone.glb
