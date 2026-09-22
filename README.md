@@ -76,7 +76,6 @@ docker compose up -d --build
 |----------------|---------------------------|-----------------------------|
 | Apache + PHP   | http://localhost:8080     | The 3D viewer               |
 | phpMyAdmin     | http://localhost:8081     | Administer MySQL            |
-| Portainer      | https://localhost:9443    | Administer Docker containers|
 | MySQL          | internal `mysql:3306`     | Live rotation data          |
 
 Credentials live in `.env` (not committed to git). Tables are created
