@@ -14,6 +14,7 @@
 // hold the computer's real LAN address for the QR/link to work from
 // another device, not whatever host this page happened to load from.
 $pageHost = $_SERVER['HTTP_HOST'] ?? '172.20.10.2:8080';
+$publicUrl = rtrim(getenv('PUBLIC_URL') ?: '', '/');
 $hostParts = explode(':', $pageHost, 2);
 $defaultPort = $hostParts[1] ?? '8080';
 // Rendered directly into the page's HTML (not set by JS after load) so the
@@ -23,6 +24,9 @@ $defaultPort = $hostParts[1] ?? '8080';
 // inline script below still takes over from here once the IP field is
 // touched.
 $initialUrl = 'phyphox://' . $pageHost . '/api/motion_stream.php?ip=' . urlencode($pageHost);
+if ($publicUrl !== '') {
+  $initialUrl = $publicUrl . '/api/motion_stream.php';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -93,11 +97,14 @@ $initialUrl = 'phyphox://' . $pageHost . '/api/motion_stream.php?ip=' . urlencod
      If nothing happens when you tap it, open phyphox, use its QR-scanner,
      and scan the code underneath instead.</p>
 
+  <?php if ($publicUrl === ''): ?>
   <label class="field-label" for="ip-input">This computer's LAN address (used for both the link and QR code below):</label>
   <input type="text" id="ip-input" spellcheck="false" autocapitalize="off" autocomplete="off"
          value="<?php echo htmlspecialchars($pageHost); ?>">
 
-  <a class="btn" id="open-btn" href="<?php echo htmlspecialchars($initialUrl); ?>">Open in phyphox</a>
+  <?php endif; ?>
+
+  <a class="btn" id="open-btn" href="<?php echo htmlspecialchars($initialUrl); ?>"><?php echo $publicUrl !== '' ? 'Download phyphox experiment' : 'Open in phyphox'; ?></a>
 
   <div class="qr"><div id="qr"></div></div>
 
@@ -105,6 +112,7 @@ $initialUrl = 'phyphox://' . $pageHost . '/api/motion_stream.php?ip=' . urlencod
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script>
+    const publicUrl = <?php echo json_encode($publicUrl, JSON_HEX_TAG | JSON_HEX_AMP); ?>;
     const pageHost = <?php echo json_encode($pageHost); ?>;
     const defaultPort = <?php echo json_encode($defaultPort); ?>;
     const ipInput = document.getElementById('ip-input');
@@ -122,6 +130,7 @@ $initialUrl = 'phyphox://' . $pageHost . '/api/motion_stream.php?ip=' . urlencod
     }
 
     function currentUrl() {
+      if (publicUrl) return publicUrl + '/api/motion_stream.php';
       const ip = normalizeIp(ipInput.value);
       return 'phyphox://' + ip + '/api/motion_stream.php?ip=' + encodeURIComponent(ip);
     }
@@ -136,7 +145,7 @@ $initialUrl = 'phyphox://' . $pageHost . '/api/motion_stream.php?ip=' . urlencod
       qr = new QRCode(qrEl, { text: url, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
     }
 
-    ipInput.addEventListener('input', refresh);
+    if (ipInput) ipInput.addEventListener('input', refresh);
     refresh();
   </script>
 </body>

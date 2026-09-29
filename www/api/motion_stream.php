@@ -22,9 +22,14 @@ if (strpos($ip, ':') === false) {
   $hostParts = explode(':', $_SERVER['HTTP_HOST'] ?? '');
   $ip .= ':' . ($hostParts[1] ?? '8080');
 }
-$address = 'http://' . $ip . '/api/phyphox_ingest.php';
+$publicUrl = rtrim(getenv('PUBLIC_URL') ?: '', '/');
+$address = ($publicUrl !== '' ? $publicUrl : 'http://' . $ip) . '/api/phyphox_ingest.php';
+if ($publicUrl !== '') {
+  $ip = $publicUrl;
+}
 
 header('Content-Type: application/xml; charset=utf-8');
+header('Content-Disposition: attachment; filename="motion-stream.phyphox"');
 ?>
 <phyphox version="1.15" locale="en">
   <title>Motion Stream (Phone 3D Viewer)</title>

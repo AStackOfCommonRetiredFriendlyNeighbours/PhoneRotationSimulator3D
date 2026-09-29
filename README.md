@@ -141,7 +141,7 @@ On the Mac mini, inspect existing routes, then add only the simulator route:
 
 ```sh
 tailscale serve status
-tailscale serve --bg --http=10000 http://127.0.0.1:8080
+tailscale serve --bg --https=10000 http://127.0.0.1:8080
 tailscale serve status
 ```
 
@@ -151,15 +151,18 @@ on the Mac mini in the tailnet policy; do not grant admin ports to guests.
 
 Connect the phone and viewing computer to the tailnet. Open:
 
-- Viewer: http://macmini.tailf8a8ee.ts.net:10000/
-- Phone setup: http://macmini.tailf8a8ee.ts.net:10000/get-app.php
+- Viewer: https://macmini.tailf8a8ee.ts.net:10000/
+- Phone setup: https://macmini.tailf8a8ee.ts.net:10000/get-app.php
 
-Keep `macmini.tailf8a8ee.ts.net:10000` in the phone setup address field.
-Import a fresh experiment into phyphox (or scan the QR code inside phyphox)
-and press play. Open the viewer on the other device to see rotation.
-HTTP matches the experiment generator's current protocol; Tailscale encrypts
-traffic between devices. Switching this route to HTTPS also requires updating
-the generated experiment URLs.
+Download and open the experiment in phyphox, or scan the setup page's QR
+code inside phyphox, then press play. Re-import existing experiments after
+switching from HTTP to HTTPS.
+
+`PUBLIC_URL` in Compose defaults to the Mac mini's HTTPS address. Override
+it for another server. It controls both experiment download and sensor upload
+URLs. Tailscale Serve provides the TLS certificate and remains tailnet-only.
+When migrating the old HTTP route, first run
+`tailscale serve --http=10000 off`, then enable the HTTPS route above.
 
 phpMyAdmin is not served through Tailscale. For administration, forward its
 loopback port over SSH and open http://127.0.0.1:8081 locally:
@@ -171,5 +174,5 @@ ssh -L 8081:127.0.0.1:8081 elias@macmini
 Remove only the simulator route when needed:
 
 ```sh
-tailscale serve --http=10000 off
+tailscale serve --https=10000 off
 ```
