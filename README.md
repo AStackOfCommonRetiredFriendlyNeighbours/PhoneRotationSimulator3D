@@ -3,17 +3,30 @@
 A single page (`index.php`) shows a phone GLB model (Nokia 3310 or a modern
 low-poly phone, switchable) in a dark studio scene with a grid floor. It sits
 still, auto-rotating slowly when idle, until a phone starts streaming its
-real rotation via the [phyphox](https://phyphox.org) app — then the model
-follows along live, in near-real-time, buffered and smoothed for clean
-playback. A small "Live from phyphox" badge and a HUD (orientation angles)
-appear whenever a stream is being picked up.
+real motion — then the model follows along live, in near-real-time,
+buffered and smoothed for clean playback. A small "Live from …" badge and a
+HUD (orientation angles, and position when available) appear whenever a
+stream is being picked up.
 
-Only rotation is tracked. Position/motion tracking (estimating movement by
-double-integrating the accelerometer) was tried and removed — a phone
-accelerometer alone can't be corrected against anything external (no
-GPS/visual reference), so it never settled on something reliable. Rotation,
-by contrast, comes straight from phyphox's attitude sensor and is accurate
-and immediate, so that's what this focuses on.
+There are two ways to stream a phone's motion in, and either can be used at
+any time — whichever streamed most recently is what the viewer shows:
+
+- **[phyphox](https://phyphox.org)** app — rotation only, from the phone's
+  gyro/accelerometer/magnetometer fused "attitude" sensor. Zero setup
+  beyond installing the app; see "Streaming from phyphox" below.
+- **The companion Android app** (`android-app/`) — full position *and*
+  rotation, using ARCore's camera+IMU visual-inertial tracking. More
+  accurate and gives real 6DoF movement, at the cost of needing to be built
+  and run from Android Studio onto a real ARCore-capable phone rather than
+  just installing an app from a store. See `android-app/README.md`.
+
+Position tracking was originally tried with the phone's accelerometer alone
+(double-integrating it) and removed — an accelerometer alone can't be
+corrected against anything external (no GPS/visual reference), so it never
+settled on something reliable. The ARCore app solves that properly by
+fusing in the camera, which is the only thing that actually works for this
+(confirmed against phyphox's own documentation and its lead developer's own
+statements on why phyphox itself doesn't attempt it).
 
 Camera orbit/zoom is free with the mouse at any time (drag to orbit, scroll
 to zoom, right-drag to pan) — moving the camera never interrupts a live
@@ -40,11 +53,11 @@ Controls sit at the bottom of the screen once the model has loaded:
 
 Both sliders can be changed mid-stream without causing a jump.
 
-Motion capture is done entirely through the phyphox app rather than the
-browser: browsers block motion-sensor access on a plain `http://<LAN-IP>`
-page (see "Known limitations"), and phyphox — being a native app, not a
-browser page — isn't subject to that restriction. See "Streaming from
-phyphox" below for setup.
+Motion capture is done entirely through native apps rather than the
+browser: browsers block motion-sensor *and* camera-pose access on a plain
+`http://<LAN-IP>` page (see "Known limitations"), and neither phyphox nor
+the ARCore companion app — being native apps, not browser pages — are
+subject to that restriction.
 
 ## Structure
 
@@ -60,10 +73,12 @@ www/
  │   ├── models_list.php      — GET: scans assets/ for .glb files
  │   ├── motion_stream.php    — GET: generates the phyphox experiment for a given ?ip=
  │   ├── phyphox_ingest.php   — POST: receives streamed phyphox rotation data
- │   └── phyphox_live.php     — GET: recent rotation keyframes for whichever phone is streaming
+ │   ├── arcore_ingest.php    — POST: receives streamed pose data from the Android app
+ │   └── phyphox_live.php     — GET: recent keyframes for whichever phone is streaming (either source)
  └── assets/
      ├── nokia_3310.glb
      └── low_poly_mobile_phone.glb
+android-app/                 — companion ARCore app (Android Studio project, see its own README)
 ```
 
 ## Run it
@@ -113,17 +128,30 @@ running — the server infers stream boundaries itself: a burst of incoming
 data becomes one continuous stream, and a new one starts if nothing arrives
 for 5 seconds (i.e. after you hit stop and later play again).
 
+## Streaming from the ARCore app (camera-based, full position + rotation)
+
+See `android-app/README.md` for the full setup (it needs Android Studio and
+a real ARCore-capable phone, not just an app install). Once it's running
+and pointed at the same server IP:port, it shows up on the viewer exactly
+like phyphox does, badge included — except the model also moves through
+space, not just rotates, and the HUD shows a live position readout too.
+
 ## Known limitations
 
 - **~400ms of intentional lag**: the live view buffers briefly so it can
   interpolate between real samples instead of the model stepping/snapping
   between updates. That delay is deliberate — smoothness was prioritized
   over minimum latency, and it's adjustable via the delay slider.
-- **Motion requires a secure context in a browser**, which is exactly why
-  this project doesn't attempt browser-based motion capture at all — a
-  plain `http://<LAN-IP>` page (what this runs as) can't get sensor access
-  in modern browsers regardless of device, so phyphox (a native app, not
-  subject to that restriction) is the only way real device motion gets in.
+- **Motion/camera-pose access requires a secure context in a browser**,
+  which is exactly why this project doesn't attempt browser-based motion
+  capture at all — a plain `http://<LAN-IP>` page (what this runs as)
+  can't get sensor or camera-pose access in modern browsers regardless of
+  device. Both phyphox and the ARCore app are native apps, so neither is
+  subject to that restriction — it's specifically a browser-JavaScript
+  thing, not a property of the network being plain HTTP.
+- **The ARCore app needs Android Studio to build and run** — there's no
+  Play Store listing for it, so getting it onto a phone means a USB cable
+  and Developer options, not just tapping install. See its README for why.
 
 ## Tailnet-only deployment on the Mac mini
 

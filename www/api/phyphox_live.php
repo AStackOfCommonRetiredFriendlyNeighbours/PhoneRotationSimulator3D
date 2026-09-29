@@ -1,11 +1,13 @@
 <?php
-// Powers the Viewer tab's automatic "live from phyphox" mode: polled every
-// ~100ms from the browser, this reports a batch of whatever new keyframes
-// have landed for the most recently active phyphox stream since the
+// Powers the Viewer tab's automatic "live" mode: polled every ~100ms from
+// the browser, this reports a batch of whatever new keyframes have landed
+// for the most recently active stream (from either source -- phyphox or
+// the ARCore app, see phyphox_ingest.php and arcore_ingest.php) since the
 // client's last poll (not just the newest one), so the browser can buffer a
 // short queue and interpolate between real samples for smooth playback
-// instead of snapping every poll. (See phyphox_ingest.php for how the pose
-// data itself is derived and stored.)
+// instead of snapping every poll. Position fields are only meaningful for
+// an 'arcore' source; a 'phyphox' recording's pos_* is just the schema
+// default (0,0,0), which index.php knows to ignore via the `source` field.
 
 require __DIR__ . '/db.php';
 header('Content-Type: application/json');
@@ -18,7 +20,11 @@ $conn = get_db_connection();
 
 $cutoff = microtime(true) - LIVE_WINDOW_SECONDS;
 $stmt = $conn->prepare(
-  'SELECT recording_id FROM phyphox_sessions WHERE last_seen_at > ? ORDER BY last_seen_at DESC LIMIT 1'
+  'SELECT s.recording_id, r.source
+     FROM phyphox_sessions s
+     JOIN recordings r ON r.id = s.recording_id
+     WHERE s.last_seen_at > ?
+     ORDER BY s.last_seen_at DESC LIMIT 1'
 );
 $stmt->bind_param('d', $cutoff);
 $stmt->execute();
@@ -31,6 +37,7 @@ if (!$session) {
 }
 
 $recordingId = (int) $session['recording_id'];
+$source = $session['source'] ?: 'phyphox';
 
 // The client sends back the recording_id + newest t_ms it already has, so
 // each poll returns only what's new. A mismatched (or missing) recording_id
@@ -43,7 +50,7 @@ if ($isContinuing) {
   $since = (int) $_GET['since'];
   $limit = MAX_KEYFRAMES_PER_POLL;
   $kfStmt = $conn->prepare(
-    'SELECT t_ms, quat_x, quat_y, quat_z, quat_w
+    'SELECT t_ms, quat_x, quat_y, quat_z, quat_w, pos_x, pos_y, pos_z
        FROM keyframes WHERE recording_id = ? AND t_ms > ? ORDER BY t_ms ASC LIMIT ?'
   );
   $kfStmt->bind_param('iii', $recordingId, $since, $limit);
@@ -53,7 +60,7 @@ if ($isContinuing) {
 } else {
   $limit = SEED_KEYFRAMES;
   $kfStmt = $conn->prepare(
-    'SELECT t_ms, quat_x, quat_y, quat_z, quat_w
+    'SELECT t_ms, quat_x, quat_y, quat_z, quat_w, pos_x, pos_y, pos_z
        FROM keyframes WHERE recording_id = ? ORDER BY t_ms DESC LIMIT ?'
   );
   $kfStmt->bind_param('ii', $recordingId, $limit);
@@ -74,11 +81,14 @@ $keyframes = array_map(function ($row) {
     't' => (int) $row['t_ms'],
     'qx' => (float) $row['quat_x'], 'qy' => (float) $row['quat_y'],
     'qz' => (float) $row['quat_z'], 'qw' => (float) $row['quat_w'],
+    'px' => (float) $row['pos_x'], 'py' => (float) $row['pos_y'],
+    'pz' => (float) $row['pos_z'],
   ];
 }, $rows);
 
 echo json_encode([
   'active' => true,
   'recording_id' => $recordingId,
+  'source' => $source,
   'keyframes' => $keyframes,
 ]);

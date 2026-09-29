@@ -166,19 +166,24 @@
   <button id="tracking-toggle">Tracking: On</button>
   <button id="reset-btn">Reset</button>
   <div class="slider-control">
-    <label for="delay-slider">Delay: <span id="delay-value">400</span>ms</label>
-    <input type="range" id="delay-slider" min="0" max="1000" step="50" value="400">
+    <label for="delay-slider">Delay: <span id="delay-value">80</span>ms</label>
+    <input type="range" id="delay-slider" min="0" max="1000" step="20" value="80">
   </div>
   <div class="slider-control">
-    <label for="interp-slider">Interpolation: <span id="interp-value">0.20</span></label>
-    <input type="range" id="interp-slider" min="0.05" max="1" step="0.05" value="0.2">
+    <label for="interp-slider">Interpolation: <span id="interp-value">0.60</span></label>
+    <input type="range" id="interp-slider" min="0.05" max="1" step="0.05" value="0.6">
+  </div>
+  <div class="slider-control" id="scale-control" style="display:none">
+    <label for="scale-slider">Position scale: <span id="scale-value">4.0</span>x</label>
+    <input type="range" id="scale-slider" min="0.5" max="15" step="0.5" value="4">
   </div>
 </div>
-<div id="live-badge"><span class="dot"></span><span class="label">Live from phyphox</span></div>
+<div id="live-badge"><span class="dot"></span><span class="label">Live</span></div>
 <div id="hud">
   <div>alpha: <span id="alpha">0</span>°</div>
   <div>beta: <span id="beta">0</span>°</div>
   <div>gamma: <span id="gamma">0</span>°</div>
+  <div id="pos-row" style="display:none">pos: <span id="pos">0.00, 0.00, 0.00</span></div>
 </div>
 
 <script type="importmap">
@@ -205,12 +210,17 @@ const delaySliderEl = document.getElementById('delay-slider');
 const delayValueEl = document.getElementById('delay-value');
 const interpSliderEl = document.getElementById('interp-slider');
 const interpValueEl = document.getElementById('interp-value');
+const scaleControlEl = document.getElementById('scale-control');
+const scaleSliderEl = document.getElementById('scale-slider');
+const scaleValueEl = document.getElementById('scale-value');
 const liveBadgeEl = document.getElementById('live-badge');
 const liveBadgeLabelEl = liveBadgeEl.querySelector('.label');
 const hudEl = document.getElementById('hud');
 const alphaEl = document.getElementById('alpha');
 const betaEl = document.getElementById('beta');
 const gammaEl = document.getElementById('gamma');
+const posRowEl = document.getElementById('pos-row');
+const posEl = document.getElementById('pos');
 
 // --- Scene / Camera / Renderer ---
 const scene = new THREE.Scene();
@@ -237,6 +247,24 @@ controls.minDistance = 0.02;
 controls.maxDistance = 50;
 controls.target.set(0, -0.35, 0);
 // Full freedom: orbit all the way around and underneath the floor too.
+
+// The position math re-expresses ARCore's movement relative to however the
+// phone was held at the last Reset, which makes "push the phone away from
+// you" map to one *consistent* 3D axis in the scene -- but that's only
+// intuitive on screen if the viewer's own camera happens to be looking
+// straight down that axis. The default orbit angle (2, 1.5, 3) is angled
+// off to the side for a nicer-looking idle shot, so even correct
+// forward/back motion projects onto the screen as a diagonal mix,
+// including a left-right component -- which is exactly what reads as "goes
+// sideways". Snapping the viewer's own camera to a straight-on view
+// whenever the reference frame is re-established (Reset, or picking up a
+// new stream) fixes that: forward/back then actually looks like
+// toward/away on screen, at least until the person orbits away from it
+// themselves afterward.
+function snapViewerToFrontView() {
+  camera.position.set(0, controls.target.y + 1.0, 4.2);
+  controls.update();
+}
 
 // Idle auto-rotation: spins slowly whenever nothing is streaming live,
 // pausing while the user is orbiting and resuming a little after they let go.
@@ -423,51 +451,67 @@ fetch('api/models_list.php')
     if (MODELS.length > 0) loadingEl.textContent = 'Could not load the 3D model.';
   });
 
-// --- Live phyphox stream ---
-// Polls the server for whatever phone is actively streaming via
-// api/motion_stream.php right now (see phyphox_ingest.php) and drives the
-// model's rotation automatically — no button here, this is the whole point
-// of the phyphox workaround: watch it live on a computer while it streams.
-// (Position/motion tracking was tried and dropped -- accelerometer-only
-// position estimation isn't reliable enough to be worth the complexity, so
-// this only tracks rotation, which phyphox's attitude sensor reports
-// directly and accurately.)
+// --- Live stream (phyphox or the ARCore app) ---
+// Polls the server for whatever phone is actively streaming right now --
+// either phyphox (api/phyphox_ingest.php, rotation only) or the companion
+// ARCore app (api/arcore_ingest.php, full 6DoF position + rotation) -- and
+// drives the model automatically, no button here: that's the whole point,
+// watch it live on a computer while it streams. Position is only applied
+// when the active recording's `source` is 'arcore' -- a phyphox stream's
+// position fields are just the schema default (0,0,0) and would otherwise
+// yank the model to the origin.
 //
 // Each poll returns a small batch of newly-landed keyframes (not just the
 // latest one) into a short queue; a playback delay (LIVE_BUFFER_MS, tunable
 // live via the delay slider) is deliberately held so the render loop always
-// has two real samples on hand to slerp between every frame, instead of the
-// model snapping to a new pose only once per poll. Lower it for less lag
-// but choppier motion, raise it for smoother motion but more delay.
-let LIVE_BUFFER_MS = 400; // adjustable live via the delay slider
+// has two real samples on hand to interpolate between every frame, instead
+// of the model snapping to a new pose only once per poll. Lower it for less
+// lag but choppier motion, raise it for smoother motion but more delay.
+let LIVE_BUFFER_MS = 80; // adjustable live via the delay slider -- defaults low, favoring responsiveness over smoothness
 // How much the model eases toward each new buffered sample per frame
 // (tunable live via the interpolation slider): lower is smoother but
 // laggier behind the buffer, higher is snappier but more prone to visible
 // stepping if the buffer itself is running low on samples.
-let LIVE_SMOOTH_FACTOR = 0.2;
+let LIVE_SMOOTH_FACTOR = 0.6;
 
 let liveActive = false;
+let liveSource = 'phyphox'; // 'phyphox' | 'arcore' -- which source the active recording is from
 let liveRecordingId = null;
 let liveSinceCursor = -1;
-let liveQueue = []; // ascending by t: { t, qx, qy, qz, qw }
+let needsAutoReference = false; // set on (re)joining a stream; consumed once its first real sample arrives
+let liveQueue = []; // ascending by t: { t, qx, qy, qz, qw, px, py, pz }
 let liveAnchorWall = null; // performance.now() when playback of this queue began
 let liveAnchorT = null;    // the recording's own t (ms) that wall time lines up with
 
+// Real-world meters (from the ARCore app) -> viewer units. Ordinary
+// hand-scale motion is only a few centimeters, which is barely visible
+// against a model that's ~1.6 units across at 1:1 -- so this defaults well
+// above 1:1 and is live-tunable via the position scale slider (shown only
+// while an ARCore stream is active).
+let POSITION_SCALE = 4.0;
+
 const deviceQuaternion = new THREE.Quaternion();
+const devicePos = new THREE.Vector3();
 const liveEuler = new THREE.Euler();
 const liveQuatA = new THREE.Quaternion();
 const liveQuatB = new THREE.Quaternion();
+const livePosA = new THREE.Vector3();
+const livePosB = new THREE.Vector3();
 
 // Pausing/resetting are purely local viewing conveniences -- neither one
-// touches the data phyphox_ingest.php is writing to the database.
+// touches the data the ingest endpoints are writing to the database.
 let trackingEnabled = true;
 
 // "Reset" re-zeroes the display without needing the server involved: it
-// captures the current raw orientation as a reference, and every pose
-// after that is shown relative to it (inverse-rotate) until the next reset
-// or a new stream begins.
+// captures the current raw orientation/position as a reference, and every
+// pose after that is shown relative to it (inverse-rotate / subtract) until
+// the next reset or a new stream begins. Position reset matters especially
+// for the ARCore app, whose world origin is just wherever its tracking
+// session happened to start.
 const refQuatInverse = new THREE.Quaternion();
+const refPosOffset = new THREE.Vector3();
 const rawQuat = new THREE.Quaternion();
+const rawPos = new THREE.Vector3();
 
 function refreshLiveBadge() {
   if (!liveActive) {
@@ -475,9 +519,10 @@ function refreshLiveBadge() {
     return;
   }
   liveBadgeEl.classList.add('visible');
-  liveBadgeLabelEl.textContent = trackingEnabled
-    ? 'Live from phyphox'
-    : 'Live from phyphox — tracking paused';
+  const sourceLabel = liveSource === 'arcore' ? 'Live from ARCore app' : 'Live from phyphox';
+  liveBadgeLabelEl.textContent = trackingEnabled ? sourceLabel : `${sourceLabel} — tracking paused`;
+  posRowEl.style.display = liveSource === 'arcore' ? '' : 'none';
+  scaleControlEl.style.display = liveSource === 'arcore' ? '' : 'none';
 }
 
 async function pollPhyphoxLive() {
@@ -505,21 +550,35 @@ async function pollPhyphoxLive() {
     if (!liveActive) {
       liveActive = true;
       hudEl.classList.add('visible');
-      refreshLiveBadge();
     }
+    liveSource = d.source || 'phyphox';
+    refreshLiveBadge();
 
     if (d.recording_id !== liveRecordingId) {
-      // (Re)joining a stream -- reset the buffer and the reset reference
-      // (an old one belongs to a different session).
+      // (Re)joining a stream -- reset the buffer. The reset REFERENCE
+      // itself is deliberately not zeroed here: doing that would show
+      // ARCore's raw pose, in its own session-arbitrary heading, for
+      // however long it takes the person to remember to press Reset
+      // themselves. Instead this stream's first real sample (below) is
+      // captured as the reference automatically -- exactly what pressing
+      // Reset does, just immediate, so a fresh stream is never shown raw.
       liveRecordingId = d.recording_id;
       liveSinceCursor = -1;
       liveQueue = [];
       liveAnchorWall = null;
-      refQuatInverse.identity();
+      needsAutoReference = true;
       modelGroup.quaternion.identity();
+      modelGroup.position.set(0, 0, 0);
+      snapViewerToFrontView();
     }
 
     if (d.keyframes && d.keyframes.length > 0) {
+      if (needsAutoReference) {
+        const first = d.keyframes[0];
+        refQuatInverse.set(first.qx, first.qy, first.qz, first.qw).invert();
+        refPosOffset.set(first.px, first.py, first.pz);
+        needsAutoReference = false;
+      }
       liveQueue.push(...d.keyframes);
       liveSinceCursor = d.keyframes[d.keyframes.length - 1].t;
     }
@@ -532,7 +591,12 @@ let livePollTimer = null;
 function startPhyphoxLivePoll() {
   if (livePollTimer) return;
   pollPhyphoxLive();
-  livePollTimer = setInterval(pollPhyphoxLive, 100);
+  // 30ms rather than the old 100ms: this poll is a lightweight indexed
+  // query against a local server, so polling faster costs little and
+  // directly lowers the floor on how fresh the buffered data can be --
+  // unlike the delay/interpolation sliders, this isn't something the page
+  // exposes as adjustable, since there's little reason to ever want it slower.
+  livePollTimer = setInterval(pollPhyphoxLive, 30);
 }
 
 function updateLivePlayback() {
@@ -558,20 +622,38 @@ function updateLivePlayback() {
     liveQuatA.set(a.qx, a.qy, a.qz, a.qw);
     liveQuatB.set(b.qx, b.qy, b.qz, b.qw);
     rawQuat.copy(liveQuatA).slerp(liveQuatB, frac);
+    livePosA.set(a.px, a.py, a.pz);
+    livePosB.set(b.px, b.py, b.pz);
+    rawPos.copy(livePosA).lerp(livePosB, frac);
   } else {
     // Not enough buffered data to interpolate yet (still warming up, or the
     // network fell behind) -- hold on the newest sample we do have.
     rawQuat.set(a.qx, a.qy, a.qz, a.qw);
+    rawPos.set(a.px, a.py, a.pz);
   }
 
-  // Re-express relative to the last reset point (identity until Reset has
-  // been pressed).
+  // Re-express relative to the last reset point (identity/zero until Reset
+  // has been pressed).
   deviceQuaternion.copy(refQuatInverse).multiply(rawQuat);
+  // Position needs the same reference-frame rotation applied that
+  // orientation gets (refQuatInverse), not just an offset subtraction:
+  // ARCore's position is reported in its own session-arbitrary world
+  // frame (whichever direction the phone happened to be facing the moment
+  // tracking started), which generally does NOT line up with the viewer's
+  // own fixed scene axes. Without rotating the position delta into the
+  // same "as held at last Reset" frame that orientation already uses,
+  // pushing the phone in a real-world direction could show up on
+  // basically any axis in the viewer -- including sideways -- and that
+  // mapping would silently change every time tracking restarts.
+  devicePos.copy(rawPos).sub(refPosOffset).applyQuaternion(refQuatInverse).multiplyScalar(POSITION_SCALE);
 
   liveEuler.setFromQuaternion(deviceQuaternion, 'YXZ');
   alphaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.y));
   betaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.x));
   gammaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.z));
+  if (liveSource === 'arcore') {
+    posEl.textContent = `${devicePos.x.toFixed(2)}, ${devicePos.y.toFixed(2)}, ${devicePos.z.toFixed(2)}`;
+  }
 }
 
 // --- Tracking toggle + reset ---
@@ -584,9 +666,13 @@ trackingToggleBtn.addEventListener('click', () => {
 
 resetBtn.addEventListener('click', () => {
   refQuatInverse.copy(rawQuat).invert();
-  // Snap immediately instead of waiting for the slerp to catch up.
+  refPosOffset.copy(rawPos);
+  // Snap immediately instead of waiting for the slerp/lerp to catch up.
   deviceQuaternion.identity();
+  devicePos.set(0, 0, 0);
   modelGroup.quaternion.identity();
+  modelGroup.position.set(0, 0, 0);
+  snapViewerToFrontView();
 });
 
 // Both sliders take effect on the very next frame simply by being read
@@ -607,6 +693,11 @@ interpSliderEl.addEventListener('input', () => {
   interpValueEl.textContent = LIVE_SMOOTH_FACTOR.toFixed(2);
 });
 
+scaleSliderEl.addEventListener('input', () => {
+  POSITION_SCALE = Number(scaleSliderEl.value);
+  scaleValueEl.textContent = POSITION_SCALE.toFixed(1);
+});
+
 // --- Animation loop ---
 function animate() {
   requestAnimationFrame(animate);
@@ -614,6 +705,9 @@ function animate() {
 
   if (liveActive && trackingEnabled) {
     modelGroup.quaternion.slerp(deviceQuaternion, LIVE_SMOOTH_FACTOR);
+    if (liveSource === 'arcore') {
+      modelGroup.position.lerp(devicePos, LIVE_SMOOTH_FACTOR);
+    }
   } else if (!liveActive && autoRotate) {
     modelGroup.rotation.y += 0.004;
   }

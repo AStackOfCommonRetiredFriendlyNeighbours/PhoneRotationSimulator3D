@@ -14,6 +14,14 @@ function get_db_connection() {
   $password = getenv('MYSQL_PASSWORD') ?: 'meinpasswort';
   $database = getenv('MYSQL_DATABASE') ?: 'meine_db';
 
+  // "p:" -- a persistent connection: PHP/Apache keeps it open and hands it
+  // back out to the next request handled by the same worker process,
+  // instead of paying a fresh TCP+MySQL-auth handshake on literally every
+  // single request. This matters a lot here specifically: the ARCore app
+  // POSTs a new pose ~30-60 times a SECOND, each one otherwise opening (and
+  // tearing down) its own brand-new connection.
+  $host = 'p:' . $host;
+
   $lastError = null;
   for ($attempt = 0; $attempt < 10; $attempt++) {
     $mysqli = @new mysqli($host, $user, $password, $database);
@@ -32,8 +40,26 @@ function get_db_connection() {
     exit;
   }
 
-  ensure_schema($conn);
+  ensure_schema_once($conn);
   return $conn;
+}
+
+function ensure_schema_once($conn) {
+  // ensure_schema() below does several CREATE TABLE / information_schema
+  // lookups -- fine to pay once, wasteful to pay on every single request at
+  // up to ~60Hz. mod_php has no natural cross-request memory (a "static"
+  // local doesn't survive between requests the way it would in a
+  // long-running process), so this uses a plain marker file in the
+  // container's own /tmp as a cheap "already checked this container
+  // lifetime" flag -- a single file_exists() stat instead of ~10 SQL
+  // statements. It naturally re-runs once after any container
+  // restart/rebuild, which is exactly when it's actually needed again.
+  $marker = sys_get_temp_dir() . '/phone3d_schema_ensured';
+  if (file_exists($marker)) {
+    return;
+  }
+  ensure_schema($conn);
+  @file_put_contents($marker, '1');
 }
 
 function ensure_schema($conn) {
@@ -42,11 +68,17 @@ function ensure_schema($conn) {
       id INT AUTO_INCREMENT PRIMARY KEY,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       duration_ms INT NOT NULL DEFAULT 0,
-      video_filename VARCHAR(255) NULL
+      video_filename VARCHAR(255) NULL,
+      source VARCHAR(16) NULL
     )
   ");
 
-  // One row per streamed rotation sample -- see phyphox_ingest.php.
+  // One row per streamed pose sample. quat_* comes from every source;
+  // pos_* is only real data when it comes from the ARCore app (see
+  // api/arcore_ingest.php) -- phyphox has no camera, so its rows just leave
+  // pos_* at the default (0,0,0), which is fine since the viewer only
+  // applies position for a recording whose source is 'arcore' (see
+  // index.php).
   $conn->query("
     CREATE TABLE IF NOT EXISTS keyframes (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,15 +88,20 @@ function ensure_schema($conn) {
       quat_y DOUBLE NOT NULL,
       quat_z DOUBLE NOT NULL,
       quat_w DOUBLE NOT NULL,
+      pos_x DOUBLE NOT NULL DEFAULT 0,
+      pos_y DOUBLE NOT NULL DEFAULT 0,
+      pos_z DOUBLE NOT NULL DEFAULT 0,
       INDEX (recording_id),
       CONSTRAINT fk_keyframes_recording FOREIGN KEY (recording_id)
         REFERENCES recordings(id) ON DELETE CASCADE
     )
   ");
 
-  // Tracks which recording each streaming phone (by phyphox's own uniqueID)
-  // is currently appending to, since each HTTP request is otherwise
-  // stateless. Used only by phyphox_ingest.php.
+  // Tracks which recording each streaming phone (matched by a per-source
+  // unique ID -- phyphox's own uniqueID, or a UUID the ARCore app generates
+  // and keeps in SharedPreferences) is currently appending to, since each
+  // HTTP request is otherwise stateless. Shared by phyphox_ingest.php and
+  // arcore_ingest.php.
   $conn->query("
     CREATE TABLE IF NOT EXISTS phyphox_sessions (
       unique_id VARCHAR(64) PRIMARY KEY,
@@ -76,22 +113,45 @@ function ensure_schema($conn) {
     )
   ");
 
-  // Position tracking (accelerometer dead-reckoning) was removed -- only
-  // rotation is tracked now. Older deployments may still have these
-  // columns from before; drop them so the schema matches what the code
-  // actually uses. MySQL has no "DROP COLUMN IF EXISTS" (that's a
-  // MariaDB/Postgres thing -- confirmed against MySQL's own ALTER TABLE
-  // grammar, which doesn't list it), so existence has to be checked by
-  // hand first. This matters beyond tidiness: keyframes.pos_x/y/z were
-  // NOT NULL with no default, so as long as they lingered, every insert
-  // that didn't supply them was rejected outright by strict mode -- i.e.
-  // nothing was being recorded at all.
-  drop_column_if_exists($conn, 'keyframes', 'pos_x');
-  drop_column_if_exists($conn, 'keyframes', 'pos_y');
-  drop_column_if_exists($conn, 'keyframes', 'pos_z');
-  foreach (['vel_x', 'vel_y', 'vel_z', 'pos_x', 'pos_y', 'pos_z',
-            'grav_x', 'grav_y', 'grav_z', 'grav_ready', 'quiet_s'] as $col) {
+  // Schema evolution for deployments created by earlier versions of this
+  // project. MySQL has neither "ADD COLUMN IF NOT EXISTS" nor "DROP COLUMN
+  // IF EXISTS" (that's a MariaDB/Postgres thing -- confirmed against
+  // MySQL's own ALTER TABLE grammar, which doesn't list either), so
+  // existence has to be checked by hand first every time. This matters
+  // beyond tidiness: keyframes.pos_x/y/z used to be NOT NULL with no
+  // default, so as long as they lingered unexpectedly, every insert that
+  // didn't supply them was rejected outright by strict mode -- i.e.
+  // nothing was being recorded at all. DEFAULT 0 this time around
+  // specifically avoids repeating that.
+  add_column_if_not_exists($conn, 'keyframes', 'pos_x', 'DOUBLE NOT NULL DEFAULT 0');
+  add_column_if_not_exists($conn, 'keyframes', 'pos_y', 'DOUBLE NOT NULL DEFAULT 0');
+  add_column_if_not_exists($conn, 'keyframes', 'pos_z', 'DOUBLE NOT NULL DEFAULT 0');
+  add_column_if_not_exists($conn, 'recordings', 'source', 'VARCHAR(16) NULL');
+  // Last-accepted position per session, used by arcore_ingest.php to reject
+  // implausible single-frame jumps (ARCore relocalization glitches) instead
+  // of letting them make the model visibly teleport. Unused/left at the
+  // default by phyphox sessions, which never send a position.
+  add_column_if_not_exists($conn, 'phyphox_sessions', 'last_pos_x', 'DOUBLE NOT NULL DEFAULT 0');
+  add_column_if_not_exists($conn, 'phyphox_sessions', 'last_pos_y', 'DOUBLE NOT NULL DEFAULT 0');
+  add_column_if_not_exists($conn, 'phyphox_sessions', 'last_pos_z', 'DOUBLE NOT NULL DEFAULT 0');
+
+  foreach (['vel_x', 'vel_y', 'vel_z', 'grav_x', 'grav_y', 'grav_z',
+            'grav_ready', 'quiet_s'] as $col) {
     drop_column_if_exists($conn, 'phyphox_sessions', $col);
+  }
+}
+
+function add_column_if_not_exists($conn, $table, $column, $definition) {
+  $stmt = $conn->prepare(
+    'SELECT 1 FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?'
+  );
+  $stmt->bind_param('ss', $table, $column);
+  $stmt->execute();
+  $exists = $stmt->get_result()->num_rows > 0;
+  $stmt->close();
+  if (!$exists) {
+    $conn->query("ALTER TABLE `$table` ADD COLUMN `$column` $definition");
   }
 }
 

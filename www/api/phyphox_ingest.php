@@ -97,7 +97,7 @@ $startingNew = !$session
   || $firstSampleT < (float) $session['last_t_s'] - 1.0; // phyphox's own clock rewound -> it was restarted
 
 if ($startingNew) {
-  $conn->query('INSERT INTO recordings (duration_ms, video_filename) VALUES (0, NULL)');
+  $conn->query("INSERT INTO recordings (duration_ms, video_filename, source) VALUES (0, NULL, 'phyphox')");
   $recordingId = $conn->insert_id;
   $lastT = 0.0;
 } else {
@@ -127,11 +127,8 @@ try {
   $kfStmt->close();
   $lastT = $maxT;
 
-  $durationMs = (int) round($maxT * 1000);
-  $updStmt = $conn->prepare('UPDATE recordings SET duration_ms = ? WHERE id = ? AND duration_ms < ?');
-  $updStmt->bind_param('iii', $durationMs, $recordingId, $durationMs);
-  $updStmt->execute();
-  $updStmt->close();
+  // (recordings.duration_ms is not touched here -- it was for a replay
+  // feature that's no longer part of this project and nothing reads it.)
 
   $sessStmt = $conn->prepare(
     'INSERT INTO phyphox_sessions (unique_id, recording_id, last_t_s, last_seen_at)
