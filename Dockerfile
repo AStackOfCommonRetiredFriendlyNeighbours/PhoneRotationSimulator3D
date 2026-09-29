@@ -11,3 +11,5 @@ RUN { \
       echo 'max_execution_time = 120'; \
       echo 'memory_limit = 256M'; \
     } > /usr/local/etc/php/conf.d/uploads.ini
+
+COPY --chown=www-data:www-data ./www/ /var/www/html/

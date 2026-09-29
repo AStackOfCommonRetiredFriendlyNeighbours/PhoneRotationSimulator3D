@@ -124,3 +124,52 @@ for 5 seconds (i.e. after you hit stop and later play again).
   plain `http://<LAN-IP>` page (what this runs as) can't get sensor access
   in modern browsers regardless of device, so phyphox (a native app, not
   subject to that restriction) is the only way real device motion gets in.
+
+## Tailnet-only deployment on the Mac mini
+
+Application files are copied into the image. After code changes, rebuild:
+
+```sh
+docker compose up -d --build
+```
+
+Keep the existing `.env` on the server. The MySQL named volume persists
+across rebuilds; never use `docker compose down -v` for updates.
+The web and phpMyAdmin ports bind only to loopback. MySQL has no published port.
+
+On the Mac mini, inspect existing routes, then add only the simulator route:
+
+```sh
+tailscale serve status
+tailscale serve --bg --http=10000 http://127.0.0.1:8080
+tailscale serve status
+```
+
+Do not reset Serve or alter Jellyfin (443) or Vikunja (8443).
+Do not use Funnel for this deployment. Allow authorized users TCP port 10000
+on the Mac mini in the tailnet policy; do not grant admin ports to guests.
+
+Connect the phone and viewing computer to the tailnet. Open:
+
+- Viewer: http://macmini.tailf8a8ee.ts.net:10000/
+- Phone setup: http://macmini.tailf8a8ee.ts.net:10000/get-app.php
+
+Keep `macmini.tailf8a8ee.ts.net:10000` in the phone setup address field.
+Import a fresh experiment into phyphox (or scan the QR code inside phyphox)
+and press play. Open the viewer on the other device to see rotation.
+HTTP matches the experiment generator's current protocol; Tailscale encrypts
+traffic between devices. Switching this route to HTTPS also requires updating
+the generated experiment URLs.
+
+phpMyAdmin is not served through Tailscale. For administration, forward its
+loopback port over SSH and open http://127.0.0.1:8081 locally:
+
+```sh
+ssh -L 8081:127.0.0.1:8081 elias@macmini
+```
+
+Remove only the simulator route when needed:
+
+```sh
+tailscale serve --http=10000 off
+```

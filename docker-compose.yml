@@ -2,10 +2,9 @@ services:
   web:
     build: .
     container_name: apache_php
+    restart: unless-stopped
     ports:
-      - "8080:80"
-    volumes:
-      - ./www:/var/www/html
+      - "127.0.0.1:8080:80"
     environment:
       MYSQL_HOST: mysql
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -35,7 +34,7 @@ services:
     container_name: phpmyadmin
     restart: unless-stopped
     ports:
-      - "8081:80"
+      - "127.0.0.1:8081:80"
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
