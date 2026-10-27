@@ -74,7 +74,10 @@ www/
  │   ├── motion_stream.php    — GET: generates the phyphox experiment for a given ?ip=
  │   ├── phyphox_ingest.php   — POST: receives streamed phyphox rotation data
  │   ├── arcore_ingest.php    — POST: receives streamed pose data from the Android app
- │   └── phyphox_live.php     — GET: recent keyframes for whichever phone is streaming (either source)
+ │   ├── phyphox_live.php     — GET: recent keyframes for whichever phone is streaming (either source), plus any external-camera readings for it
+ │   ├── current_recording.php    — GET: which 'arcore' recording is active right now (used by marker_tracker.php to self-pair, no app change needed)
+ │   └── external_pose_ingest.php — POST: receives webcam/marker-tracker pose readings for an existing recording
+ ├── marker_tracker.php      — runs on a SECOND device's camera (laptop webcam, second phone): outside-in ArUco marker tracking, see "Second tracking channel" below
  └── assets/
      ├── nokia_3310.glb
      └── low_poly_mobile_phone.glb
@@ -135,6 +138,61 @@ a real ARCore-capable phone, not just an app install). Once it's running
 and pointed at the same server IP:port, it shows up on the viewer exactly
 like phyphox does, badge included — except the model also moves through
 space, not just rotates, and the HUD shows a live position readout too.
+
+## Second tracking channel: a webcam watching a marker (optional, fuses with ARCore)
+
+A single phone's ARCore session is *inside-out* tracking — it only has
+itself to go on, so its position estimate slowly drifts over a long
+session with no way to self-correct. Adding a second, fixed camera that
+watches the phone from *outside* gives a genuinely independent, non-drifting
+measurement of the same phone's pose, which the viewer continuously fuses
+with ARCore's own stream instead of trusting either source alone.
+
+**Setup:**
+
+1. Print an ArUco marker (dictionary `ARUCO`, id `0` by default) using the
+   [marker creator](https://damianofalcioni.github.io/js-aruco2/samples/marker-creator/marker-creator.html?dictionary=ARUCO).
+   Measure the printed square's edge in millimeters — that exact number
+   matters, it's what turns the camera's view of it into a real-world
+   distance.
+2. Tape it flat to the back of the tracked phone, fully visible, not
+   curved or wrinkled.
+3. On a second device — a laptop with a webcam, or another phone's camera —
+   open `http://<server>:8080/marker_tracker.php`, enter the marker's
+   printed size and ID, and hit Start.
+4. Keep that second device still once it's running and keep the marker in
+   its view. It finds the currently-streaming ARCore recording on its own
+   (`api/current_recording.php`) — no pairing code to type anywhere.
+
+The main viewer's top-right "Streams" panel shows both channels' live
+status, and the "Live from ARCore app" badge gains a "+ webcam" suffix once
+a fix is established. A "Show raw ARCore (ghost)" checkbox appears once
+that happens too — switch it on to see a second, translucent orange copy of
+the model showing ARCore's *uncorrected* position next to the real
+(corrected) one, so the correction is something you can actually watch
+happening rather than just trust.
+
+**How the fusion works:** the two cameras' coordinate frames don't start
+out aligned — ARCore's world frame is wherever its tracking session
+happened to start, and the webcam's is centered on itself. The two are
+reconciled with a single simultaneous correspondence (both channels can see
+the phone's full 3D orientation at the same instant), computed once per
+stream rather than continuously re-snapped, so the webcam stays a genuine
+independent check rather than being forced to trivially agree with ARCore.
+From then on, every new webcam-side reading (~12Hz) pulls a persistent
+position and rotation correction toward what it sees, blended in
+continuously (not just a once-in-a-while drift trim) but as a weighted
+average rather than a hard override, so one bad marker read (motion blur, a
+grazing viewing angle) nudges rather than yanks.
+
+**Caveats, since this hasn't been tested against a physical marker/webcam
+yet:** the marker's orientation estimate (via the POSIT algorithm) can have
+a sign/axis ambiguity depending on viewing angle and the exact convention
+the library returns rotations in. If the model visibly rotates or moves
+the wrong way once a fix engages, use the flip X/Y/Z checkboxes on
+`marker_tracker.php` (take effect live, no restart needed) until it tracks
+correctly, then leave them set. Only ever meaningful for an ARCore
+recording — phyphox has no position to correct in the first place.
 
 ## Known limitations
 

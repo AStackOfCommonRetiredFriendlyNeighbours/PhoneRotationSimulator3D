@@ -155,6 +155,56 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
   }
+
+  #streams-panel {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 6;
+    background: rgba(10, 10, 15, 0.6);
+    border: 1px solid rgba(0, 255, 255, 0.25);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #ccc;
+    min-width: 180px;
+  }
+  #streams-panel .streams-title {
+    color: #0ff;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-size: 11px;
+    margin-bottom: 6px;
+  }
+  #streams-panel .stream-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 3px 0;
+  }
+  #streams-panel .stream-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #666; /* inactive by default */
+    flex-shrink: 0;
+  }
+  #streams-panel .stream-dot.active {
+    background: #3f7;
+    box-shadow: 0 0 6px #3f7;
+  }
+  #streams-panel .stream-dot.stale {
+    background: #e9a53f;
+    box-shadow: 0 0 6px #e9a53f;
+  }
+  #streams-panel a#open-tracker-link {
+    display: inline-block;
+    margin-top: 8px;
+    color: #0ff;
+    text-decoration: none;
+    font-size: 12px;
+  }
+  #streams-panel a#open-tracker-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -177,6 +227,9 @@
     <label for="scale-slider">Position scale: <span id="scale-value">4.0</span>x</label>
     <input type="range" id="scale-slider" min="0.5" max="15" step="0.5" value="4">
   </div>
+  <div class="slider-control" id="ghost-control" style="display:none">
+    <label><input type="checkbox" id="ghost-toggle"> Show raw ARCore (ghost)</label>
+  </div>
 </div>
 <div id="live-badge"><span class="dot"></span><span class="label">Live</span></div>
 <div id="hud">
@@ -184,6 +237,18 @@
   <div>beta: <span id="beta">0</span>°</div>
   <div>gamma: <span id="gamma">0</span>°</div>
   <div id="pos-row" style="display:none">pos: <span id="pos">0.00, 0.00, 0.00</span></div>
+</div>
+<div id="streams-panel">
+  <div class="streams-title">Streams</div>
+  <div class="stream-row">
+    <span class="stream-dot" id="phone-dot"></span>
+    <span>Phone: <span id="phone-status">inactive</span></span>
+  </div>
+  <div class="stream-row">
+    <span class="stream-dot" id="webcam-dot"></span>
+    <span>Webcam: <span id="webcam-status">not connected</span></span>
+  </div>
+  <a id="open-tracker-link" href="marker_tracker.php" target="_blank" rel="noopener">Open camera tracker ↗</a>
 </div>
 
 <script type="importmap">
@@ -221,6 +286,12 @@ const betaEl = document.getElementById('beta');
 const gammaEl = document.getElementById('gamma');
 const posRowEl = document.getElementById('pos-row');
 const posEl = document.getElementById('pos');
+const ghostControlEl = document.getElementById('ghost-control');
+const ghostToggleEl = document.getElementById('ghost-toggle');
+const phoneDotEl = document.getElementById('phone-dot');
+const phoneStatusEl = document.getElementById('phone-status');
+const webcamDotEl = document.getElementById('webcam-dot');
+const webcamStatusEl = document.getElementById('webcam-status');
 
 // --- Scene / Camera / Renderer ---
 const scene = new THREE.Scene();
@@ -356,6 +427,8 @@ scene.add(modelGroup);
 const loader = new GLTFLoader();
 const wrappers = {};
 let floorY = Infinity;
+let ghostGroup = null;       // raw-ARCore "ghost" copy -- created once models finish loading, see below
+const ghostWrappers = {};
 
 function loadModel(config) {
   return new Promise((resolve, reject) => {
@@ -401,6 +474,7 @@ function loadModel(config) {
 function showModel(id) {
   for (const key in wrappers) {
     wrappers[key].visible = (key === id);
+    if (ghostWrappers[key]) ghostWrappers[key].visible = (key === id);
   }
   for (const btn of switcherEl.children) {
     btn.classList.toggle('active', btn.dataset.id === id);
@@ -444,6 +518,44 @@ fetch('api/models_list.php')
     loadingEl.classList.add('hidden');
     switcherEl.classList.add('visible');
     controlsEl.classList.add('visible');
+
+    // "Ghost" model: a second, translucent copy of the SAME phone model,
+    // driven by the raw/uncorrected ARCore pose (pre-webcam-fusion) while
+    // the main model shows the fused pose -- lets you literally see what
+    // the webcam correction is doing, instead of just trusting the HUD
+    // numbers. Deep-cloned so it shares geometry/vertex buffers with the
+    // real model (cheap), but materials are cloned per-mesh too so its
+    // opacity/tint can differ without touching the real model's own
+    // materials (clone(true) alone would still share material objects).
+    ghostGroup = modelGroup.clone(true);
+    ghostGroup.traverse((obj) => {
+      if (obj.isMesh) {
+        const wasArray = Array.isArray(obj.material);
+        const mats = wasArray ? obj.material : [obj.material];
+        const cloned = mats.map((m) => {
+          const clone = m.clone();
+          clone.transparent = true;
+          clone.opacity = 0.35;
+          clone.depthWrite = false;
+          clone.color = new THREE.Color(0xff8c3f); // orange tint -- visually distinct from the (unmodified) real model
+          clone.emissive = new THREE.Color(0xff8c3f);
+          clone.emissiveIntensity = 0.5;
+          return clone;
+        });
+        obj.material = wasArray ? cloned : cloned[0];
+      }
+    });
+    ghostGroup.visible = false;
+    scene.add(ghostGroup);
+    // Map each wrapper id to its cloned counterpart (clone(true) preserves
+    // child order, so pairing by index with the original is reliable) so
+    // showModel() can keep both the real and ghost model in sync when the
+    // switcher is used mid-stream.
+    Object.keys(wrappers).forEach((id, i) => {
+      ghostWrappers[id] = ghostGroup.children[i];
+    });
+    showModel(DEFAULT_MODEL_ID); // re-apply now that ghostWrappers exists too
+
     startPhyphoxLivePoll();
   })
   .catch((error) => {
@@ -513,16 +625,62 @@ const refPosOffset = new THREE.Vector3();
 const rawQuat = new THREE.Quaternion();
 const rawPos = new THREE.Vector3();
 
+// --- Second tracking channel: an external camera (laptop/second-phone
+// webcam watching an ArUco marker on the phone -- see marker_tracker.php)
+// reporting the SAME physical phone's pose from outside, in its own
+// camera-centered frame. That frame has an unknown fixed rotation relative
+// to ARCore's own session-arbitrary world frame, so it can't be used
+// directly -- it first needs aligning, which only needs ONE simultaneous
+// correspondence (both channels can observe the phone's full 3D
+// orientation at the same moment) rather than any manual calibration step:
+//
+//   extAlignQuat = rawQuat(t0) * extQuat(t0)^-1
+//
+// captured once when the external channel's first sample lands after a
+// (re)join/Reset -- exactly mirroring how refQuatInverse/refPosOffset
+// themselves get captured from the phone's own first sample. After that,
+// extAlignQuat * extQuat(t) is what the external channel thinks the
+// phone's ARCore-equivalent raw orientation is, directly comparable to
+// ARCore's own rawQuat -- and persistently blended in via
+// rotationCorrectionQuat/positionCorrectionOffset below, continuously, not
+// just once at alignment time. This is what lets the webcam's drift-free
+// (but noisier, slower) position correct ARCore's drift-prone (but fast,
+// smooth) one without discarding either source.
+let haveExternalFix = false;
+let needsExternalReference = false;
+let lastExternalT = null; // dedupe: phyphox_live.php resends the last ~2s of external samples every poll
+const extAlignQuat = new THREE.Quaternion();
+const extRefPos = new THREE.Vector3();
+const extQuat = new THREE.Quaternion();
+const extPos = new THREE.Vector3();
+const extQuatEquiv = new THREE.Quaternion(); // extAlignQuat * extQuat(t): external sample, rotated into ARCore's raw frame
+const extDisplacement = new THREE.Vector3();
+const extDeviceEquivPos = new THREE.Vector3(); // same display frame as devicePos
+const positionCorrectionOffset = new THREE.Vector3(); // persistent -- added to devicePos every frame
+const rotationCorrectionQuat = new THREE.Quaternion();  // persistent -- composed onto deviceQuaternion every frame
+const fusedPos = new THREE.Vector3();
+const fusedQuat = new THREE.Quaternion();
+// How strongly each new external sample pulls the persistent correction
+// toward what the webcam just saw. Not a slow once-in-a-while trim: at
+// ~12Hz external samples this reaches most of the way to a steady
+// disagreement within well under a second, so the webcam channel is a
+// genuine continuous contributor, not just an occasional nudge -- while
+// still being a weighted EMA rather than an outright override, so one bad
+// marker read (motion blur, bad angle) doesn't yank the model around.
+const EXTERNAL_BLEND_FACTOR = 0.35;
+
 function refreshLiveBadge() {
   if (!liveActive) {
     liveBadgeEl.classList.remove('visible');
     return;
   }
   liveBadgeEl.classList.add('visible');
-  const sourceLabel = liveSource === 'arcore' ? 'Live from ARCore app' : 'Live from phyphox';
+  let sourceLabel = liveSource === 'arcore' ? 'Live from ARCore app' : 'Live from phyphox';
+  if (haveExternalFix) sourceLabel += ' + webcam';
   liveBadgeLabelEl.textContent = trackingEnabled ? sourceLabel : `${sourceLabel} — tracking paused`;
   posRowEl.style.display = liveSource === 'arcore' ? '' : 'none';
   scaleControlEl.style.display = liveSource === 'arcore' ? '' : 'none';
+  ghostControlEl.style.display = (liveSource === 'arcore' && haveExternalFix) ? '' : 'none';
 }
 
 async function pollPhyphoxLive() {
@@ -567,6 +725,16 @@ async function pollPhyphoxLive() {
       liveQueue = [];
       liveAnchorWall = null;
       needsAutoReference = true;
+      // New stream -- any previous external alignment belonged to the old
+      // one (different recording_id, quite possibly a different physical
+      // arrangement of the webcam too). Re-arm it rather than carrying a
+      // stale alignment/correction forward.
+      needsExternalReference = true;
+      haveExternalFix = false;
+      lastExternalT = null;
+      lastExternalWallMs = null;
+      positionCorrectionOffset.set(0, 0, 0);
+      rotationCorrectionQuat.identity();
       modelGroup.quaternion.identity();
       modelGroup.position.set(0, 0, 0);
       snapViewerToFrontView();
@@ -581,6 +749,64 @@ async function pollPhyphoxLive() {
       }
       liveQueue.push(...d.keyframes);
       liveSinceCursor = d.keyframes[d.keyframes.length - 1].t;
+    }
+
+    if (d.external && d.external.length > 0) {
+      for (const sample of d.external) {
+        if (lastExternalT !== null && sample.t <= lastExternalT) continue; // already processed
+        lastExternalT = sample.t;
+        lastExternalWallMs = performance.now();
+        extQuat.set(sample.qx, sample.qy, sample.qz, sample.qw);
+        extPos.set(sample.px, sample.py, sample.pz);
+
+        if (needsExternalReference) {
+          // One-time correspondence: both channels are observing the same
+          // physical orientation right now, so this fully determines the
+          // fixed rotation between their two frames. Deliberately NOT
+          // re-snapped on every later sample -- that would make the
+          // external channel trivially agree with ARCore instead of being
+          // an independent check on it.
+          //
+          // Uses the freshest ARCore sample actually known at THIS poll
+          // (the newest queued keyframe, if this poll delivered any) rather
+          // than rawQuat/rawPos -- those are only updated by the render
+          // loop's updateLivePlayback(), so on the exact poll where a new
+          // stream and the external reference both land together, they
+          // could still be holding the PREVIOUS stream's last values.
+          const freshestArcore = liveQueue.length > 0 ? liveQueue[liveQueue.length - 1] : null;
+          const alignQuatSrc = freshestArcore
+            ? liveQuatA.set(freshestArcore.qx, freshestArcore.qy, freshestArcore.qz, freshestArcore.qw)
+            : rawQuat;
+          extAlignQuat.copy(alignQuatSrc).multiply(extQuat.clone().invert());
+          extRefPos.copy(extPos);
+          needsExternalReference = false;
+          haveExternalFix = true;
+          refreshLiveBadge();
+          continue; // this sample defines the reference; nothing to correct against yet
+        }
+
+        // This sample's ARCore-equivalent raw orientation/displacement,
+        // using the fixed alignment above -- directly comparable to
+        // ARCore's own rawQuat / (rawPos - refPosOffset).
+        extQuatEquiv.copy(extAlignQuat).multiply(extQuat);
+        extDisplacement.copy(extPos).sub(extRefPos).applyQuaternion(extAlignQuat);
+
+        // Express both corrections in the same DISPLAY frame devicePos/
+        // deviceQuaternion already use, then blend the persistent
+        // correction toward what this sample implies. EMA rather than a
+        // hard snap: one bad marker read (blur, grazing angle) nudges
+        // things rather than yanking them.
+        extDeviceEquivPos.copy(extDisplacement).applyQuaternion(refQuatInverse).multiplyScalar(POSITION_SCALE);
+        positionCorrectionOffset.lerp(
+          extDeviceEquivPos.clone().sub(devicePos),
+          EXTERNAL_BLEND_FACTOR
+        );
+
+        fusedQuat.copy(refQuatInverse).multiply(extQuatEquiv); // external-implied display orientation
+        const arcoreDisplayQuat = refQuatInverse.clone().multiply(rawQuat);
+        const desiredRotCorrection = fusedQuat.clone().multiply(arcoreDisplayQuat.clone().invert());
+        rotationCorrectionQuat.slerp(desiredRotCorrection, EXTERNAL_BLEND_FACTOR);
+      }
     }
   } catch (err) {
     // Transient network hiccup -- just try again on the next tick.
@@ -647,12 +873,19 @@ function updateLivePlayback() {
   // mapping would silently change every time tracking restarts.
   devicePos.copy(rawPos).sub(refPosOffset).applyQuaternion(refQuatInverse).multiplyScalar(POSITION_SCALE);
 
-  liveEuler.setFromQuaternion(deviceQuaternion, 'YXZ');
+  // Fold in the webcam channel's persistent correction, if any (both stay
+  // at identity/zero until an external fix exists, so this is a no-op
+  // otherwise -- the model behaves exactly as before with no second
+  // device connected).
+  fusedPos.copy(devicePos).add(positionCorrectionOffset);
+  fusedQuat.copy(rotationCorrectionQuat).multiply(deviceQuaternion).normalize();
+
+  liveEuler.setFromQuaternion(fusedQuat, 'YXZ');
   alphaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.y));
   betaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.x));
   gammaEl.textContent = Math.round(THREE.MathUtils.radToDeg(liveEuler.z));
   if (liveSource === 'arcore') {
-    posEl.textContent = `${devicePos.x.toFixed(2)}, ${devicePos.y.toFixed(2)}, ${devicePos.z.toFixed(2)}`;
+    posEl.textContent = `${fusedPos.x.toFixed(2)}, ${fusedPos.y.toFixed(2)}, ${fusedPos.z.toFixed(2)}`;
   }
 }
 
@@ -698,18 +931,68 @@ scaleSliderEl.addEventListener('input', () => {
   scaleValueEl.textContent = POSITION_SCALE.toFixed(1);
 });
 
+let showGhost = false;
+ghostToggleEl.addEventListener('change', () => {
+  showGhost = ghostToggleEl.checked;
+});
+
+// --- Streams panel: a visual/status read-out of every channel currently
+// feeding the model, not just whichever one happens to be shown -- the
+// phone's own ARCore stream, and (if connected) the webcam's marker
+// tracker. Refreshed on a plain timer rather than piggybacking on the
+// live-poll responses, since "webcam went stale" needs to be noticed even
+// between polls that have nothing new in them.
+let lastExternalWallMs = null; // when we last actually RECEIVED a new external sample (wall clock, not the sample's own t)
+function refreshStreamsPanel() {
+  if (liveActive) {
+    phoneDotEl.className = 'stream-dot active';
+    phoneStatusEl.textContent = liveSource === 'arcore' ? 'ARCore app, live' : 'phyphox, live';
+  } else {
+    phoneDotEl.className = 'stream-dot';
+    phoneStatusEl.textContent = 'inactive';
+  }
+
+  if (!haveExternalFix) {
+    webcamDotEl.className = 'stream-dot';
+    webcamStatusEl.textContent = liveSource === 'arcore' ? 'not connected' : 'n/a (phyphox has no position)';
+  } else {
+    const ageMs = lastExternalWallMs === null ? Infinity : performance.now() - lastExternalWallMs;
+    if (ageMs < 1500) {
+      webcamDotEl.className = 'stream-dot active';
+      webcamStatusEl.textContent = 'tracking marker, correcting';
+    } else {
+      webcamDotEl.className = 'stream-dot stale';
+      webcamStatusEl.textContent = `no fresh sample (${Math.round(ageMs / 1000)}s) — marker out of view?`;
+    }
+  }
+}
+setInterval(refreshStreamsPanel, 500);
+
 // --- Animation loop ---
 function animate() {
   requestAnimationFrame(animate);
   updateLivePlayback();
 
   if (liveActive && trackingEnabled) {
-    modelGroup.quaternion.slerp(deviceQuaternion, LIVE_SMOOTH_FACTOR);
+    modelGroup.quaternion.slerp(fusedQuat, LIVE_SMOOTH_FACTOR);
     if (liveSource === 'arcore') {
-      modelGroup.position.lerp(devicePos, LIVE_SMOOTH_FACTOR);
+      modelGroup.position.lerp(fusedPos, LIVE_SMOOTH_FACTOR);
+    }
+
+    if (ghostGroup) {
+      const showingGhost = showGhost && haveExternalFix && liveSource === 'arcore';
+      ghostGroup.visible = showingGhost;
+      if (showingGhost) {
+        // Raw/uncorrected ARCore pose -- deliberately NOT run through the
+        // same slerp/lerp smoothing as the main model, so this is exactly
+        // "what ARCore alone currently says", not a softened version of it.
+        ghostGroup.quaternion.copy(deviceQuaternion);
+        ghostGroup.position.copy(devicePos);
+      }
     }
   } else if (!liveActive && autoRotate) {
     modelGroup.rotation.y += 0.004;
+    if (ghostGroup) ghostGroup.visible = false;
   }
 
   controls.update();

@@ -86,9 +86,45 @@ $keyframes = array_map(function ($row) {
   ];
 }, $rows);
 
+// Second, independent pose channel for the same recording -- a webcam
+// watching an ArUco marker on the phone (see marker_tracker.php and
+// external_pose_ingest.php) instead of the phone's own sensors. Only ever
+// meaningful for an 'arcore' recording (there's no marker-based position
+// concept for phyphox's rotation-only stream), and only a handful of recent
+// rows: this channel runs at webcam frame rate (~10-15Hz), far slower than
+// the main keyframes, so there's no equivalent need for a client-tracked
+// cursor here -- just hand over whatever landed in the last couple of
+// seconds each poll, which index.php folds into its drift-correction filter
+// using the samples' own timestamps, not poll timing.
+$external = [];
+if ($source === 'arcore') {
+  $externalWindowSeconds = 2.0; // not a top-level const: this is inside an if-block, where PHP's `const` isn't allowed
+  $extCutoff = microtime(true) - $externalWindowSeconds;
+  $extStmt = $conn->prepare(
+    'SELECT t_ms, quat_x, quat_y, quat_z, quat_w, pos_x, pos_y, pos_z
+       FROM external_keyframes
+       WHERE recording_id = ? AND received_at > ?
+       ORDER BY t_ms ASC LIMIT 100'
+  );
+  $extStmt->bind_param('id', $recordingId, $extCutoff);
+  $extStmt->execute();
+  $extRows = $extStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+  $extStmt->close();
+  $external = array_map(function ($row) {
+    return [
+      't' => (int) $row['t_ms'],
+      'qx' => (float) $row['quat_x'], 'qy' => (float) $row['quat_y'],
+      'qz' => (float) $row['quat_z'], 'qw' => (float) $row['quat_w'],
+      'px' => (float) $row['pos_x'], 'py' => (float) $row['pos_y'],
+      'pz' => (float) $row['pos_z'],
+    ];
+  }, $extRows);
+}
+
 echo json_encode([
   'active' => true,
   'recording_id' => $recordingId,
   'source' => $source,
   'keyframes' => $keyframes,
+  'external' => $external,
 ]);

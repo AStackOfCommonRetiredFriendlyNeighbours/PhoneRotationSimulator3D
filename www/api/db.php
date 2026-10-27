@@ -139,6 +139,33 @@ function ensure_schema($conn) {
             'grav_ready', 'quiet_s'] as $col) {
     drop_column_if_exists($conn, 'phyphox_sessions', $col);
   }
+
+  // A second, independent pose channel for the SAME recording -- not a
+  // separate source like phyphox/arcore, but an outside-in observer (a
+  // laptop/second-phone webcam watching an ArUco marker taped to the
+  // tracked phone, see marker_tracker.php) reporting what it sees of that
+  // same physical phone, in its own camera-centered coordinate frame. The
+  // viewer (index.php) is what reconciles the two frames and fuses them --
+  // this table just needs to let one recording have many of these landing
+  // concurrently with its regular keyframes.
+  $conn->query("
+    CREATE TABLE IF NOT EXISTS external_keyframes (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      recording_id INT NOT NULL,
+      t_ms INT NOT NULL,
+      quat_x DOUBLE NOT NULL,
+      quat_y DOUBLE NOT NULL,
+      quat_z DOUBLE NOT NULL,
+      quat_w DOUBLE NOT NULL,
+      pos_x DOUBLE NOT NULL,
+      pos_y DOUBLE NOT NULL,
+      pos_z DOUBLE NOT NULL,
+      received_at DOUBLE NOT NULL,
+      INDEX (recording_id, t_ms),
+      CONSTRAINT fk_external_keyframes_recording FOREIGN KEY (recording_id)
+        REFERENCES recordings(id) ON DELETE CASCADE
+    )
+  ");
 }
 
 function add_column_if_not_exists($conn, $table, $column, $definition) {
