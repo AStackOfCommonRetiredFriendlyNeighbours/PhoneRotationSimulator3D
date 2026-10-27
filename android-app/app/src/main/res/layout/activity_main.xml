@@ -26,7 +26,7 @@
             android:id="@+id/ip_field"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Server IP:Port, e.g. 192.168.1.20:8080"
+            android:hint="Server URL, e.g. https://macmini.tailf8a8ee.ts.net:10000"
             android:inputType="textUri"
             android:textColor="#FFFFFF"
             android:textColorHint="#AAAAAA" />

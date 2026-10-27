@@ -11,9 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Sends one small JSON POST per tracked pose to api/arcore_ingest.php on
- * the server -- plain http://, no TLS (see arcore_ingest.php's own comment
- * on why that's fine for a native app's own networking, unlike a browser
- * page).
+ * the server using HTTPS by default, or an explicitly supplied HTTP LAN URL.
  *
  * Runs on a single dedicated worker thread with a small bounded queue: if
  * the network falls behind, older un-sent poses are simply dropped instead
@@ -41,7 +39,13 @@ class PoseSender(private val uniqueId: String) {
     ) { r -> Thread(r, "pose-sender") }
 
     fun setTarget(ipPort: String) {
-        target = ipPort.trim().trimEnd('/')
+        val raw = ipPort.trim().trimEnd('/')
+        val base = if (raw.contains("://")) raw else "https://$raw"
+        val url = URL(base)
+        require(url.protocol in listOf("http", "https") && url.host.isNotBlank()
+            && url.userInfo == null && url.query == null && url.ref == null
+            && url.path.isEmpty()) { "Enter a server URL such as https://macmini.tailf8a8ee.ts.net:10000" }
+        target = base
         sentCount.set(0)
         failedCount.set(0)
         lastError = null
@@ -66,7 +70,7 @@ class PoseSender(private val uniqueId: String) {
         px: Float, py: Float, pz: Float
     ) {
         try {
-            val url = URL("http://$host/api/arcore_ingest.php")
+            val url = URL("$host/api/arcore_ingest.php")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true

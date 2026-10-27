@@ -4,7 +4,7 @@ The camera-based companion app for the Phone 3D Viewer. Instead of phyphox's
 gyro+accelerometer-only "attitude" sensor, this uses ARCore's visual-inertial
 odometry (camera + IMU fused) to get the phone's *real* 6DoF pose — position
 in meters, not just orientation — and streams it to the same server phyphox
-used to talk to, over the same plain `http://`.
+used to talk to, using HTTPS (or an explicit HTTP URL for local development).
 
 ## Why this needs Android Studio (not just a browser)
 
@@ -99,3 +99,14 @@ ARCore continuously corrects itself against what the camera sees, so it
 stays accurate over much longer stretches. It can still drift slowly over a
 long session or lose tracking briefly in a low-texture environment, which
 is inherent to the technique, not a bug in this app.
+
+## Mac mini tailnet deployment
+
+Build/install the latest app after updating: older APKs hardcode HTTP and
+cannot connect to the HTTPS-only server. Connect both devices to Tailscale.
+Enter `https://macmini.tailf8a8ee.ts.net:10000` in the app and tap Start Tracking.
+Open `https://macmini.tailf8a8ee.ts.net:10000/` on the viewing computer.
+No phyphox experiment is needed for this app. The upload endpoint is
+`/api/arcore_ingest.php`; do not append it to the app's server URL field.
+Bare hostnames default to HTTPS; for LAN development enter the full
+`http://192.168.1.20:8080` URL explicitly.
