@@ -79,7 +79,7 @@ class MainActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         startStopButton = findViewById(R.id.start_stop_button)
         statusText = findViewById(R.id.status_text)
 
-        ipField.setText(prefs.getString(KEY_SERVER_IP, "https://macmini.tailf8a8ee.ts.net:10000"))
+        ipField.setText(prefs.getString(KEY_SERVER_IP, ""))
 
         startStopButton.setOnClickListener {
             if (!tracking) {

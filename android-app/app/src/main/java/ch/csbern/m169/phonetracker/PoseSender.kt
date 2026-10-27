@@ -44,7 +44,7 @@ class PoseSender(private val uniqueId: String) {
         val url = URL(base)
         require(url.protocol in listOf("http", "https") && url.host.isNotBlank()
             && url.userInfo == null && url.query == null && url.ref == null
-            && url.path.isEmpty()) { "Enter a server URL such as https://macmini.tailf8a8ee.ts.net:10000" }
+            && url.path.isEmpty()) { "Enter a server URL such as https://server.example.ts.net:10000" }
         target = base
         sentCount.set(0)
         failedCount.set(0)
